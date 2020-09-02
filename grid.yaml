@@ -2,8 +2,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Parameters:
   ECSCluster:
     Type: String
-    Default: 'selenium-grid'
+    Default: ''
     Description: ECS Cluster name.
+
+  DesiredChrome:
+    Type: Number
+    Default: 1
+    Description: Desired number of chrome instances. A count of 1 will spin up 4 chrome browser. Count of 6 will spin up 24 chrome.
 
   Path:
     Type: String
@@ -574,7 +579,7 @@ Resources:
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 75
-      DesiredCount: 1
+      DesiredCount: !Ref DesiredChrome
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
