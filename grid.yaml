@@ -1,0 +1,714 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  ECSCluster:
+    Type: String
+    Default: 'selenium-grid'
+    Description: ECS Cluster name.
+
+  Path:
+    Type: String
+    Default: '*'
+    Description: A path on the public load balancer that this service
+                 should be connected to. Use * to send all load balancer
+                 traffic to this service.
+  Priority:
+    Type: Number
+    Default: 1
+    Description: The priority for the routing rule added to the load balancer.
+                 This only applies if your have multiple services which have been
+                 assigned to different paths on the load balancer.
+  Role:
+    Type: String
+    Default: ''
+    Description: (Optional) An IAM role to give the service's containers if the code within needs to
+                 access other AWS resources like S3 buckets, DynamoDB tables, etc
+
+Conditions:
+  HasCustomRole: !Not [ !Equals [!Ref 'Role', ''] ]
+
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: '10.0.0.0/16'
+    PublicOne:
+      CIDR: '10.0.0.0/24'
+    PublicTwo:
+      CIDR: '10.0.1.0/24'
+    PrivateOne:
+      CIDR: '10.0.2.0/24'
+    PrivateTwo:
+      CIDR: '10.0.3.0/24'
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 0
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicOne', 'CIDR']
+      MapPublicIpOnLaunch: true
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 1
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicTwo', 'CIDR']
+      MapPublicIpOnLaunch: true
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 0
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateOne', 'CIDR']
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 1
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateTwo', 'CIDR']
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachement:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachement
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref 'InternetGateway'
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetOne
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetTwo
+      RouteTableId: !Ref PublicRouteTable
+  NatGatewayOneAttachment:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachement
+    Properties:
+        Domain: vpc
+  NatGatewayTwoAttachment:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachement
+    Properties:
+        Domain: vpc
+  NatGatewayOne:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayOneAttachment.AllocationId
+      SubnetId: !Ref PublicSubnetOne
+  NatGatewayTwo:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayTwoAttachment.AllocationId
+      SubnetId: !Ref PublicSubnetTwo
+  PrivateRouteTableOne:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+  PrivateRouteOne:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableOne
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayOne
+  PrivateRouteTableOneAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableOne
+      SubnetId: !Ref PrivateSubnetOne
+  PrivateRouteTableTwo:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+  PrivateRouteTwo:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableTwo
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayTwo
+  PrivateRouteTableTwoAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableTwo
+      SubnetId: !Ref PrivateSubnetTwo
+  # ECSCluster:
+  #   Type: AWS::ECS::Cluster
+  #   Properties:
+  #     ClusterName: 'selenium-grid'
+  FargateContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the Fargate containers
+      VpcId: !Ref 'VPC'
+  EcsSecurityGroupIngressFromPublicALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the public ALB
+      GroupId: !Ref 'FargateContainerSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'PublicLoadBalancerSG'
+  EcsSecurityGroupIngressFromSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from other containers in the same security group
+      GroupId: !Ref 'FargateContainerSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'FargateContainerSecurityGroup'
+  PublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !Ref 'VPC'
+      SecurityGroupIngress:
+          - CidrIp: 0.0.0.0/0
+            IpProtocol: -1
+  PublicLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '120'
+      Subnets:
+        - !Ref PublicSubnetOne
+        - !Ref PublicSubnetTwo
+      SecurityGroups: [!Ref 'PublicLoadBalancerSG']
+  # This is an optional resource. If you don't want to use a custom domain, just
+  # remove the RecordSet resource an use the URL of the public load balancer which can
+  # be found in CloudFormation.
+  # RecordSet:
+  #   Type: "AWS::Route53::RecordSet"
+  #   DependsOn: PublicLoadBalancer
+  #   Properties:
+  #     Name: !Join ['.', ['selenium-grid', !Ref 'DomainName']]
+  #     AliasTarget:
+  #       DNSName: !GetAtt 'PublicLoadBalancer.DNSName'
+  #       HostedZoneId: !GetAtt 'PublicLoadBalancer.CanonicalHostedZoneID'
+  #     HostedZoneName: !Ref 'DomainName'
+  #     Type: A
+  DummyTargetGroupPublic:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'drop-1']]
+      Port: 4444
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+
+  DummyTargetGroupPublic2:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'drop-2']]
+      Port: 4445
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+
+  DummyTargetGroupPublic3:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'drop-3']]
+      Port: 4446
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+
+  DummyTargetGroupPublic4:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'drop-4']]
+      Port: 4447
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+  PublicLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: PublicLoadBalancer
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroupPublic'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'PublicLoadBalancer'
+      Port: 4444
+      Protocol: HTTP
+
+  PublicLoadBalancerListener2:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: PublicLoadBalancer
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroupPublic2'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'PublicLoadBalancer'
+      Port: 4445
+      Protocol: HTTP
+
+  PublicLoadBalancerListener3:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: PublicLoadBalancer
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroupPublic3'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'PublicLoadBalancer'
+      Port: 4446
+      Protocol: HTTP
+  PublicLoadBalancerListener4:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: PublicLoadBalancer
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroupPublic4'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'PublicLoadBalancer'
+      Port: 4447
+      Protocol: HTTP
+
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - 'ec2:AttachNetworkInterface'
+              - 'ec2:CreateNetworkInterface'
+              - 'ec2:CreateNetworkInterfacePermission'
+              - 'ec2:DeleteNetworkInterface'
+              - 'ec2:DeleteNetworkInterfacePermission'
+              - 'ec2:Describe*'
+              - 'ec2:DetachNetworkInterface'
+              - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+              - 'elasticloadbalancing:DeregisterTargets'
+              - 'elasticloadbalancing:Describe*'
+              - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+              - 'elasticloadbalancing:RegisterTargets'
+            Resource: '*'
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs-tasks.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+        - PolicyName: AmazonECSTaskExecutionRolePolicy
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+                - 'ecr:GetAuthorizationToken'
+                - 'ecr:BatchCheckLayerAvailability'
+                - 'ecr:GetDownloadUrlForLayer'
+                - 'ecr:BatchGetImage'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+              Resource: '*'
+  TaskDefinitionHub:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: 4096
+      Memory: 8192
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt 'ECSTaskExecutionRole.Arn'
+      ContainerDefinitions:
+        - Name: 'hub1'
+          Image: 'selenium/hub:latest'
+          PortMappings:
+            - ContainerPort: 4444
+          Environment:
+            - Name: 'GRID_MAX_SESSION'
+              Value: '20'
+            - Name: 'GRID_TIMEOUT'
+              Value: '12000'
+            - Name: 'GRID_NEW_SESSION_WAIT_TIMEOUT'
+              Value: '30000'
+            - Name: 'GRID_CLEAN_UP_CYCLE'
+              Value: '20000'
+            - Name: 'GRID_HUB_PORT'
+              Value: '4444'
+        - Name: 'hub2'
+          Image: 'selenium/hub:latest'
+          PortMappings:
+            - ContainerPort: 4445
+          Environment:
+            - Name: 'GRID_MAX_SESSION'
+              Value: '20'
+            - Name: 'GRID_TIMEOUT'
+              Value: '12000'
+            - Name: 'GRID_NEW_SESSION_WAIT_TIMEOUT'
+              Value: '30000'
+            - Name: 'GRID_CLEAN_UP_CYCLE'
+              Value: '20000'
+            - Name: 'GRID_HUB_PORT'
+              Value: '4445'
+        - Name: 'hub3'
+          Image: 'selenium/hub:latest'
+          PortMappings:
+            - ContainerPort: 4446
+          Environment:
+            - Name: 'GRID_MAX_SESSION'
+              Value: '20'
+            - Name: 'GRID_TIMEOUT'
+              Value: '12000'
+            - Name: 'GRID_NEW_SESSION_WAIT_TIMEOUT'
+              Value: '30000'
+            - Name: 'GRID_CLEAN_UP_CYCLE'
+              Value: '20000'
+            - Name: 'GRID_HUB_PORT'
+              Value: '4446'
+        - Name: 'hub4'
+          Image: 'selenium/hub:latest'
+          PortMappings:
+            - ContainerPort: 4447
+          Environment:
+            - Name: 'GRID_MAX_SESSION'
+              Value: '20'
+            - Name: 'GRID_TIMEOUT'
+              Value: '12000'
+            - Name: 'GRID_NEW_SESSION_WAIT_TIMEOUT'
+              Value: '30000'
+            - Name: 'GRID_CLEAN_UP_CYCLE'
+              Value: '20000'
+            - Name: 'GRID_HUB_PORT'
+              Value: '4447'
+  TaskDefinitionNodeChrome:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: 1024
+      Memory: 4096
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt 'ECSTaskExecutionRole.Arn'
+      ContainerDefinitions:
+        - Name: 'node-chrome1'
+          Image: 'selenium/node-chrome:latest'
+          Environment:
+            - Name: 'HUB_HOST'
+              Value: !GetAtt 'PublicLoadBalancer.DNSName'
+            - Name: 'HUB_PORT'
+              Value: '4444'
+            - Name: 'NODE_PORT'
+              Value: '5555'
+          MountPoints:
+            - ContainerPath: /dev/shm
+              SourceVolume: worker_chrome_scratch
+          PortMappings:
+            - ContainerPort: 5555
+          EntryPoint:
+            - 'sh'
+            - '-c'
+          Command:
+            - "export REMOTE_HOST=http://`hostname -i`:$NODE_PORT ; printenv | grep REMOTE ; /opt/bin/entry_point.sh;"
+        - Name: 'node-chrome2'
+          Image: 'selenium/node-chrome:latest'
+          Environment:
+            - Name: 'HUB_HOST'
+              Value: !GetAtt 'PublicLoadBalancer.DNSName'
+            - Name: 'HUB_PORT'
+              Value: '4445'
+            - Name: 'NODE_PORT'
+              Value: '5556'
+          MountPoints:
+            - ContainerPath: /dev/shm
+              SourceVolume: worker_chrome_scratch
+          PortMappings:
+            - ContainerPort: 5556
+          EntryPoint:
+            - 'sh'
+            - '-c'
+          Command:
+            - "export REMOTE_HOST=http://`hostname -i`:$NODE_PORT ; printenv | grep REMOTE ; /opt/bin/entry_point.sh;"
+        - Name: 'node-chrome3'
+          Image: 'selenium/node-chrome:latest'
+          Environment:
+            - Name: 'HUB_HOST'
+              Value: !GetAtt 'PublicLoadBalancer.DNSName'
+            - Name: 'HUB_PORT'
+              Value: '4446'
+            - Name: 'NODE_PORT'
+              Value: '5557'
+          MountPoints:
+            - ContainerPath: /dev/shm
+              SourceVolume: worker_chrome_scratch
+          PortMappings:
+            - ContainerPort: 5557
+          EntryPoint:
+            - 'sh'
+            - '-c'
+          Command:
+            - "export REMOTE_HOST=http://`hostname -i`:$NODE_PORT ; printenv | grep REMOTE ; /opt/bin/entry_point.sh;" 
+        - Name: 'node-chrome4'
+          Image: 'selenium/node-chrome:latest'
+          Environment:
+            - Name: 'HUB_HOST'
+              Value: !GetAtt 'PublicLoadBalancer.DNSName'
+            - Name: 'HUB_PORT'
+              Value: '4447'
+            - Name: 'NODE_PORT'
+              Value: '5558'
+          MountPoints:
+            - ContainerPath: /dev/shm
+              SourceVolume: worker_chrome_scratch
+          PortMappings:
+            - ContainerPort: 5558
+          EntryPoint:
+            - 'sh'
+            - '-c'
+          Command:
+            - "export REMOTE_HOST=http://`hostname -i`:$NODE_PORT ; printenv | grep REMOTE ; /opt/bin/entry_point.sh;"
+      Volumes:
+        - Host: {}
+          Name: worker_chrome_scratch
+  ServiceHub:
+    Type: AWS::ECS::Service
+    DependsOn: LoadBalancerRule
+    Properties:
+      ServiceName: 'hub'
+      Cluster:  !Ref 'ECSCluster'
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref 'FargateContainerSecurityGroup'
+          Subnets:
+            - !Ref 'PrivateSubnetOne'
+            - !Ref 'PrivateSubnetTwo'
+      TaskDefinition: !Ref 'TaskDefinitionHub'
+      Role:
+        Fn::If:
+          - 'HasCustomRole'
+          - !Ref 'Role'
+          - !Ref 'AWS::NoValue'
+      LoadBalancers:
+        - ContainerName: 'hub1'
+          ContainerPort: 4444
+          TargetGroupArn: !Ref 'TargetGroup'
+        - ContainerName: 'hub2'
+          ContainerPort: 4445
+          TargetGroupArn: !Ref 'TargetGroup2'
+        - ContainerName: 'hub3'
+          ContainerPort: 4446
+          TargetGroupArn: !Ref 'TargetGroup3'
+        - ContainerName: 'hub4'
+          ContainerPort: 4447
+          TargetGroupArn: !Ref 'TargetGroup4'
+  ServiceNodeChrome:
+    Type: AWS::ECS::Service
+    DependsOn: ServiceHub
+    Properties:
+      ServiceName: 'node-chrome'
+      Cluster:  !Ref 'ECSCluster'
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref 'FargateContainerSecurityGroup'
+          Subnets:
+            - !Ref 'PrivateSubnetOne'
+            - !Ref 'PrivateSubnetTwo'
+      TaskDefinition: !Ref 'TaskDefinitionNodeChrome'
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Name: 'selenium-grid'
+      Port: 4444
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+  TargetGroup2:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Name: 'selenium-grid2'
+      Port: 4445
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+
+  TargetGroup3:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Name: 'selenium-grid3'
+      Port: 4446
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+
+  TargetGroup4:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Name: 'selenium-grid4'
+      Port: 4447
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref 'VPC'
+  LoadBalancerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: PublicLoadBalancerListener
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'TargetGroup'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [!Ref 'Path']
+      ListenerArn: !Ref 'PublicLoadBalancerListener'
+      Priority: !Ref 'Priority'
+  LoadBalancerRule2:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: PublicLoadBalancerListener2
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'TargetGroup2'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [!Ref 'Path']
+      ListenerArn: !Ref 'PublicLoadBalancerListener2'
+      Priority: 2
+  LoadBalancerRule3:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: PublicLoadBalancerListener3
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'TargetGroup3'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [!Ref 'Path']
+      ListenerArn: !Ref 'PublicLoadBalancerListener3'
+      Priority: 3
+  LoadBalancerRule4:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: PublicLoadBalancerListener4
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'TargetGroup4'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [!Ref 'Path']
+      ListenerArn: !Ref 'PublicLoadBalancerListener4'
+      Priority: 3
+
+Outputs:
+  ExternalUrl:
+    Description: The url of the Selenium console
+    Value: !Join ['', ['http://', !GetAtt 'PublicLoadBalancer.DNSName', ':4444/grid/console']]
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'ExternalUrl' ] ]
+  ExternalUrl2:
+    Description: The url of the Selenium console
+    Value: !Join ['', ['http://', !GetAtt 'PublicLoadBalancer.DNSName', ':4445/grid/console']]
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'ExternalUrl2' ] ]
+  ExternalUrl3:
+    Description: The url of the Selenium console
+    Value: !Join ['', ['http://', !GetAtt 'PublicLoadBalancer.DNSName', ':4446/grid/console']]
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'ExternalUrl3' ] ]
+  ExternalUrl4:
+    Description: The url of the Selenium console
+    Value: !Join ['', ['http://', !GetAtt 'PublicLoadBalancer.DNSName', ':4447/grid/console']]
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'ExternalUrl4' ] ]
